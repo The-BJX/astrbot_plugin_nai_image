@@ -1,0 +1,83 @@
+{
+    "image_gen_key": {
+        "type": "string",
+        "default": "",
+        "description": "nai.sta1n.cn 的 token，必填",
+        "hint": "在 nai.sta1n.cn 申请到的 toUserId",
+        "obvious": true
+    },
+    "base_url": {
+        "type": "string",
+        "default": "https://nai.sta1n.cn",
+        "description": "生图服务地址"
+    },
+    "image_style": {
+        "type": "string",
+        "default": "vertical",
+        "description": "默认风格",
+        "options": ["vertical", "comicDoujin", "r18", "lolita25d", "anime", "galgame", "custom"]
+    },
+    "image_size": {
+        "type": "string",
+        "default": "竖图",
+        "description": "默认尺寸",
+        "options": ["竖图", "横图", "方图"]
+    },
+    "image_count": {
+        "type": "int",
+        "default": 2,
+        "description": "默认生成数量 (1-6)",
+        "min": 1,
+        "max": 6
+    },
+    "custom_artists": {
+        "type": "string",
+        "default": "",
+        "description": "自定义 artist 标签（仅在 image_style=custom 时生效）"
+    },
+    "enable_template": {
+        "type": "bool",
+        "default": true,
+        "description": "是否启用提示词模板（关闭后只使用原始提示词）"
+    },
+    "character_preset": {
+        "type": "string",
+        "default": "",
+        "description": "角色预设模板（前置提示词 + 角色外观 + 增强词），如：muelsyse(Arknights), 1girl, very long hair, masterpiece, best quality"
+    },
+    "model": {
+        "type": "string",
+        "default": "nai-diffusion-4-5-full",
+        "description": "生图模型"
+    },
+    "steps": {
+        "type": "int",
+        "default": 40,
+        "description": "采样步数"
+    },
+    "scale": {
+        "type": "int",
+        "default": 6,
+        "description": "scale"
+    },
+    "cfg": {
+        "type": "int",
+        "default": 0,
+        "description": "cfg"
+    },
+    "sampler": {
+        "type": "string",
+        "default": "k_dpmpp_2m_sde",
+        "description": "采样器"
+    },
+    "noise_schedule": {
+        "type": "string",
+        "default": "karras",
+        "description": "噪声调度"
+    },
+    "negative": {
+        "type": "string",
+        "default": "",
+        "description": "自定义反向提示词，留空使用默认"
+    }
+}
