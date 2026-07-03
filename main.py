@@ -1,6 +1,5 @@
 import asyncio
 import base64
-import os
 import time
 from typing import Optional
 
@@ -10,6 +9,8 @@ from astrbot.api import logger
 from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.api.message_components import Image as Img, Plain
 from astrbot.api.star import Context, Star, register
+
+LOG_TAG = "[NAI-Image]"
 
 IMAGE_GEN_BASE_URL_DEFAULT = "https://nai.sta1n.cn"
 PROXY_HOST = "127.0.0.1"
@@ -112,6 +113,9 @@ def _parse_args(text: str) -> dict:
 class NAIGenerateImagePlugin(Star):
     def __init__(self, context: Context, config: dict):
         super().__init__(context, config)
+        logger.info(f"{LOG_TAG} [init] 插件实例化开始")
+        logger.debug(f"{LOG_TAG} [init] config keys: {list(config.keys())}")
+
         self.base_url: str = (config.get("base_url") or IMAGE_GEN_BASE_URL_DEFAULT).strip() or IMAGE_GEN_BASE_URL_DEFAULT
         self.image_gen_key: str = (config.get("image_gen_key") or "").strip()
         self.image_style: str = config.get("image_style") or "vertical"
@@ -138,34 +142,59 @@ class NAIGenerateImagePlugin(Star):
         self.noise_schedule: str = config.get("noise_schedule") or "karras"
         neg = config.get("negative")
         self.negative: str = neg if neg else DEFAULT_NEGATIVE
-        # 预输入模板（私聊hook、群聊、/image 命令都生效）
         self.enable_template: bool = bool(config.get("enable_template", True))
         self.character_preset: str = (config.get("character_preset") or "").strip()
         self._session: Optional[aiohttp.ClientSession] = None
-        # 代理服务器（陪伴插件 → 本代理 → nai.sta1n.cn）
         self.proxy_runner: Optional[web.AppRunner] = None
         self.proxy_port: int = int(config.get("proxy_port") or PROXY_PORT)
 
+        logger.info(
+            f"{LOG_TAG} [init] 配置加载完成 | "
+            f"token={'已配置' if self.image_gen_key else '未配置'} | "
+            f"base_url={self.base_url} | "
+            f"style={self.image_style} | size={self.image_size} | "
+            f"count={self.image_count} | model={self.model} | "
+            f"steps={self.steps} scale={self.scale} cfg={self.cfg_value} | "
+            f"template={'启用' if self.enable_template and self.character_preset else '未启用'} | "
+            f"proxy_port={self.proxy_port}"
+        )
+
     def _build_full_prompt(self, user_prompt: str) -> str:
-        """拼接模板：角色预设 + 用户提示词"""
         if not self.enable_template or not self.character_preset:
             return user_prompt.strip()
         return f"{self.character_preset}, {user_prompt.strip()}"
 
     async def initialize(self):
-        self._session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=180))
-        logger.info(f"[NAI-Image] plugin initialized, base_url={self.base_url}, token exists: {bool(self.image_gen_key)}")
-        # 启动本地代理服务器
+        logger.info(f"{LOG_TAG} [initialize] 阶段开始")
+        try:
+            self._session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=180))
+            logger.info(f"{LOG_TAG} [initialize] aiohttp session 创建成功 (timeout=180s)")
+        except Exception as e:
+            logger.error(f"{LOG_TAG} [initialize] aiohttp session 创建失败: {e!r}")
+            return
+
         try:
             await self._start_proxy_server()
         except Exception as e:
-            logger.error(f"[NAI-Image] 代理服务器启动失败: {e!r}")
+            logger.error(f"{LOG_TAG} [initialize] 代理服务器启动失败: {e!r}")
+
+        logger.info(
+            f"{LOG_TAG} [initialize] 阶段完成 | token={'OK' if self.image_gen_key else 'MISSING'}"
+        )
 
     async def terminate(self):
-        await self._stop_proxy_server()
+        logger.info(f"{LOG_TAG} [terminate] 阶段开始")
+        try:
+            await self._stop_proxy_server()
+        except Exception as e:
+            logger.warning(f"{LOG_TAG} [terminate] 关闭代理异常: {e!r}")
         if self._session and not self._session.closed:
-            await self._session.close()
-        logger.info("[NAI-Image] plugin terminated")
+            try:
+                await self._session.close()
+                logger.info(f"{LOG_TAG} [terminate] aiohttp session 已关闭")
+            except Exception as e:
+                logger.warning(f"{LOG_TAG} [terminate] session 关闭异常: {e!r}")
+        logger.info(f"{LOG_TAG} [terminate] 阶段完成")
 
     def _resolve_artists(self, style: str) -> str:
         if style == "custom":
@@ -176,21 +205,30 @@ class NAIGenerateImagePlugin(Star):
         return IMAGE_SIZES.get(size, "portrait")
 
     async def _check_status(self) -> tuple[bool, int]:
+        logger.info(f"{LOG_TAG} [status] 开始检查 {self.base_url}")
         if not self._session:
+            logger.warning(f"{LOG_TAG} [status] session 未初始化")
             return False, -1
         start = time.perf_counter()
         try:
-            async with self._session.get(self.base_url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+            async with self._session.get(
+                self.base_url, timeout=aiohttp.ClientTimeout(total=10)
+            ) as resp:
                 latency = int((time.perf_counter() - start) * 1000)
+                logger.info(
+                    f"{LOG_TAG} [status] 可用 | status={resp.status} latency={latency}ms"
+                )
                 return True, latency
         except Exception as e:
-            logger.warning(f"[NAI-Image] status check failed: {e}")
+            logger.warning(f"{LOG_TAG} [status] 检查失败: {e!r}")
             return False, -1
 
     async def _fetch_quota(self) -> Optional[int]:
         if not self.image_gen_key or not self._session:
+            logger.warning(f"{LOG_TAG} [quota] 跳过：token 或 session 缺失")
             return None
         url = f"{self.base_url.rstrip('/')}/api/api/getUser"
+        logger.info(f"{LOG_TAG} [quota] 查询中... | url={url}")
         try:
             async with self._session.post(
                 url,
@@ -198,26 +236,37 @@ class NAIGenerateImagePlugin(Star):
                 headers={"Content-Type": "application/json"},
                 timeout=aiohttp.ClientTimeout(total=15),
             ) as resp:
+                logger.debug(f"{LOG_TAG} [quota] HTTP {resp.status}")
                 if resp.status != 200:
+                    logger.warning(f"{LOG_TAG} [quota] 非 200 响应: {resp.status}")
                     return None
                 data = await resp.json()
+                logger.debug(f"{LOG_TAG} [quota] response data: {data}")
                 if data.get("status") == "ok" and data.get("type") == "sta1n":
                     val = int(data.get("data", {}).get("value", 0))
+                    logger.info(f"{LOG_TAG} [quota] 查询成功 | 剩余 {val}")
                     return val
+                logger.warning(f"{LOG_TAG} [quota] 响应不符合预期: {data}")
                 return None
         except Exception as e:
-            logger.warning(f"[NAI-Image] quota fetch failed: {e}")
+            logger.warning(f"{LOG_TAG} [quota] 请求异常: {e!r}")
             return None
 
     async def _generate_one(self, prompt: str, style: str, size: str) -> Optional[bytes]:
         if not self.image_gen_key or not self._session:
+            logger.warning(f"{LOG_TAG} [generate] 跳过：token 或 session 缺失")
             return None
         artists = self._resolve_artists(style)
         from urllib.parse import quote
 
-        # 应用模板拼接（如果启用）
         full_prompt = self._build_full_prompt(prompt)
-        logger.debug(f"[NAI-Image] final prompt: {full_prompt[:100]}")
+        logger.info(
+            f"{LOG_TAG} [generate] 开始 | style={style} size={size} | "
+            f"prompt(原始)='{prompt[:60]}...' "
+            f"prompt(模板后,前60字)='{full_prompt[:60]}...'"
+        )
+        logger.debug(f"{LOG_TAG} [generate] full_prompt(完整) = {full_prompt!r}")
+        logger.debug(f"{LOG_TAG} [generate] artists = {artists!r}")
 
         url = (
             f"{self.base_url.rstrip('/')}/generate"
@@ -234,21 +283,37 @@ class NAIGenerateImagePlugin(Star):
             f"&nocache=0"
             f"&noise_schedule={self.noise_schedule}"
         )
+        logger.debug(f"{LOG_TAG} [generate] request url = {url}")
+
+        start = time.perf_counter()
         try:
-            async with self._session.get(url, timeout=aiohttp.ClientTimeout(total=180)) as resp:
+            async with self._session.get(
+                url, timeout=aiohttp.ClientTimeout(total=180)
+            ) as resp:
+                elapsed = time.perf_counter() - start
                 if resp.status != 200:
-                    logger.warning(f"[NAI-Image] generate failed, status={resp.status}")
+                    logger.warning(
+                        f"{LOG_TAG} [generate] 失败 | status={resp.status} "
+                        f"elapsed={elapsed:.2f}s"
+                    )
                     return None
-                return await resp.read()
+                img_bytes = await resp.read()
+                logger.info(
+                    f"{LOG_TAG} [generate] 成功 | bytes={len(img_bytes)} "
+                    f"elapsed={elapsed:.2f}s style={style} size={size}"
+                )
+                return img_bytes
         except asyncio.TimeoutError:
-            logger.warning("[NAI-Image] generate timeout")
+            logger.warning(
+                f"{LOG_TAG} [generate] 超时 (>{180}s) | prompt='{full_prompt[:60]}...'"
+            )
             return None
         except Exception as e:
-            logger.warning(f"[NAI-Image] generate error: {e}")
+            logger.warning(f"{LOG_TAG} [generate] 异常: {e!r}")
             return None
 
     async def _start_proxy_server(self):
-        """启动本地代理服务器，陪伴插件的 OpenAI 格式请求直接通过 NAI 插件自己的 _generate_one 生图"""
+        logger.info(f"{LOG_TAG} [proxy:start] 准备启动 {PROXY_HOST}:{self.proxy_port}")
         app = web.Application()
         app.router.add_post("/v1/images/generations", self._proxy_handle_generations)
         app.router.add_post("/v1/images/edits", self._proxy_handle_edits)
@@ -259,74 +324,87 @@ class NAIGenerateImagePlugin(Star):
         site = web.TCPSite(self.proxy_runner, PROXY_HOST, self.proxy_port)
         await site.start()
         logger.info(
-            f"[NAI-Image] 本地代理已启动: http://{PROXY_HOST}:{self.proxy_port}/v1/images/generations"
+            f"{LOG_TAG} [proxy:start] 启动成功 | "
+            f"http://{PROXY_HOST}:{self.proxy_port}/v1/images/generations"
         )
 
     async def _stop_proxy_server(self):
-        if self.proxy_runner:
-            try:
-                await self.proxy_runner.cleanup()
-                logger.info("[NAI-Image] 本地代理已停止")
-            except Exception as e:
-                logger.warning(f"[NAI-Image] 代理停止异常: {e!r}")
+        if not self.proxy_runner:
+            logger.info(f"{LOG_TAG} [proxy:stop] 代理未运行，跳过")
+            return
+        logger.info(f"{LOG_TAG} [proxy:stop] 正在关闭代理")
+        try:
+            await self.proxy_runner.cleanup()
+            logger.info(f"{LOG_TAG} [proxy:stop] 代理已停止")
+        except Exception as e:
+            logger.warning(f"{LOG_TAG} [proxy:stop] 停止异常: {e!r}")
+        finally:
             self.proxy_runner = None
 
     async def _proxy_handle_health(self, request: web.Request):
-        return web.json_response({
-            "status": "ok",
-            "plugin": "astrbot_plugin_nai_image",
-            "base_url": self.base_url,
-            "token_configured": bool(self.image_gen_key),
-        })
+        logger.debug(
+            f"{LOG_TAG} [proxy:health] GET {request.path} from {request.remote}"
+        )
+        return web.json_response(
+            {
+                "status": "ok",
+                "plugin": "astrbot_plugin_nai_image",
+                "base_url": self.base_url,
+                "token_configured": bool(self.image_gen_key),
+            }
+        )
 
     async def _proxy_handle_generations(self, request: web.Request):
+        logger.info(f"{LOG_TAG} [proxy:gen] 收到 POST {request.path} from {request.remote}")
         if not self.image_gen_key or not self._session:
+            logger.warning(f"{LOG_TAG} [proxy:gen] 拒绝：token 或 session 缺失")
             return web.json_response(
                 {"error": {"message": "NAI 插件未配置 image_gen_key", "type": "invalid_request_error"}},
                 status=400,
             )
         try:
             body = await request.json()
+            logger.debug(f"{LOG_TAG} [proxy:gen] body keys: {list(body.keys())}")
         except Exception as e:
+            logger.warning(f"{LOG_TAG} [proxy:gen] JSON 解析失败: {e!r}")
             return web.json_response(
                 {"error": {"message": f"invalid json: {e!r}", "type": "invalid_request_error"}},
                 status=400,
             )
         prompt = (body.get("prompt") or "").strip()
         if not prompt:
+            logger.warning(f"{LOG_TAG} [proxy:gen] prompt 为空")
             return web.json_response(
                 {"error": {"message": "prompt is required", "type": "invalid_request_error"}},
                 status=400,
             )
-        # size 取 OpenAI 格式 "WxH"，传给 NAI 插件 _generate_one 用
         size = body.get("size") or "1024x1024"
         n = max(1, min(4, int(body.get("n") or 1)))
+        logger.info(
+            f"{LOG_TAG} [proxy:gen] 参数 | prompt='{prompt[:80]}' size={size} n={n}"
+        )
 
-        if not self.image_gen_key:
-            return web.json_response(
-                {"error": {"message": "NAI 插件未配置 image_gen_key", "type": "invalid_request_error"}},
-                status=400,
-            )
-
-        # 直接复用 NAI 插件自己的 _generate_one —— 站点和 key 都由 NAI 插件自己管
-        logger.info(f"[NAI-Image] proxy 收到请求: prompt={prompt[:80]} size={size}")
         try:
             img_bytes = await self._generate_one(prompt, self.image_style, size)
         except Exception as e:
-            logger.warning(f"[NAI-Image] proxy _generate_one 异常: {e!r}")
+            logger.warning(f"{LOG_TAG} [proxy:gen] _generate_one 异常: {e!r}")
             return web.json_response(
                 {"error": {"message": f"generate exception: {e!r}", "type": "internal_error"}},
                 status=500,
             )
 
         if not img_bytes:
+            logger.warning(f"{LOG_TAG} [proxy:gen] 生图失败 (无 bytes 返回)")
             return web.json_response(
                 {"error": {"message": "generate failed (no bytes returned)", "type": "upstream_error"}},
                 status=502,
             )
 
         b64 = base64.b64encode(img_bytes).decode()
-        logger.info(f"[NAI-Image] proxy 生成成功: {len(img_bytes)} bytes")
+        logger.info(
+            f"{LOG_TAG} [proxy:gen] 响应 | img_bytes={len(img_bytes)} "
+            f"b64_chars={len(b64)} n={n}"
+        )
         return web.json_response(
             {
                 "created": int(time.time()),
@@ -335,13 +413,9 @@ class NAIGenerateImagePlugin(Star):
         )
 
     async def _proxy_handle_edits(self, request: web.Request):
-        """降级方案：OpenAI 风格的 /v1/images/edits（multipart/form-data，参考图改图）。
-
-        陪伴插件在自拍/自拍改图场景默认走这个接口，但我们搭的代理 server
-        没接 nai.sta1n.cn 的改图 API，所以这里把请求里的 multipart 字段解析出来，
-        丢弃参考图，按纯文生图处理，避免 404。
-        """
+        logger.info(f"{LOG_TAG} [proxy:edit] 收到 POST {request.path} from {request.remote}")
         if not self.image_gen_key or not self._session:
+            logger.warning(f"{LOG_TAG} [proxy:edit] 拒绝：token 或 session 缺失")
             return web.json_response(
                 {"error": {"message": "NAI 插件未配置 image_gen_key", "type": "invalid_request_error"}},
                 status=400,
@@ -349,9 +423,13 @@ class NAIGenerateImagePlugin(Star):
         prompt = ""
         size = "1024x1024"
         n = 1
+        parts_seen: list[str] = []
         try:
             reader = await request.multipart()
             async for part in reader:
+                if part.name is None:
+                    continue
+                parts_seen.append(part.name)
                 if part.name == "prompt":
                     prompt = (await part.text()).strip()
                 elif part.name == "size":
@@ -364,37 +442,45 @@ class NAIGenerateImagePlugin(Star):
                     except Exception:
                         n = 1
                 elif part.name in ("image", "mask", "image[]", "mask[]"):
-                    # 显式丢弃参考图 / 蒙版，按纯文生图降级
                     await part.read()
+            logger.debug(f"{LOG_TAG} [proxy:edit] multipart parts: {parts_seen}")
         except Exception as e:
-            logger.warning(f"[NAI-Image] proxy edits multipart 解析失败: {e!r}")
+            logger.warning(f"{LOG_TAG} [proxy:edit] multipart 解析失败: {e!r}")
             return web.json_response(
                 {"error": {"message": f"invalid multipart: {e!r}", "type": "invalid_request_error"}},
                 status=400,
             )
         if not prompt:
+            logger.warning(f"{LOG_TAG} [proxy:edit] prompt 为空")
             return web.json_response(
                 {"error": {"message": "prompt is required", "type": "invalid_request_error"}},
                 status=400,
             )
         logger.info(
-            f"[NAI-Image] proxy edits 降级到纯文生图: prompt={prompt[:80]} size={size} n={n} (参考图已丢弃)"
+            f"{LOG_TAG} [proxy:edit] 降级到纯文生图 | prompt='{prompt[:80]}' "
+            f"size={size} n={n} (参考图已丢弃)"
         )
+
         try:
             img_bytes = await self._generate_one(prompt, self.image_style, size)
         except Exception as e:
-            logger.warning(f"[NAI-Image] proxy edits _generate_one 异常: {e!r}")
+            logger.warning(f"{LOG_TAG} [proxy:edit] _generate_one 异常: {e!r}")
             return web.json_response(
                 {"error": {"message": f"generate exception: {e!r}", "type": "internal_error"}},
                 status=500,
             )
         if not img_bytes:
+            logger.warning(f"{LOG_TAG} [proxy:edit] 生图失败 (无 bytes 返回)")
             return web.json_response(
                 {"error": {"message": "generate failed (no bytes returned)", "type": "upstream_error"}},
                 status=502,
             )
+
         b64 = base64.b64encode(img_bytes).decode()
-        logger.info(f"[NAI-Image] proxy edits 生成成功: {len(img_bytes)} bytes")
+        logger.info(
+            f"{LOG_TAG} [proxy:edit] 响应 | img_bytes={len(img_bytes)} "
+            f"b64_chars={len(b64)} n={n}"
+        )
         return web.json_response(
             {
                 "created": int(time.time()),
@@ -404,21 +490,27 @@ class NAIGenerateImagePlugin(Star):
 
     @filter.command("image")
     async def image(self, event: AstrMessageEvent):
-        """生图指令。用法: /image <提示词> [--n=数量] [--style=风格] [--size=尺寸]"""
         text = event.message_str or ""
+        sender = event.get_sender_id() if hasattr(event, "get_sender_id") else "?"
+        logger.info(f"{LOG_TAG} [cmd:image] 收到指令 | sender={sender} | text='{text[:100]}'")
+
         if not text.strip():
+            logger.info(f"{LOG_TAG} [cmd:image] 提示用法 (空指令)")
             yield event.plain_result(
                 "用法: /image <提示词> [--n=1-6] [--style=vertical|comicDoujin|r18|lolita25d|anime|galgame|custom] [--size=竖图|横图|方图]"
             )
             return
 
         args = _parse_args(text)
+        logger.info(f"{LOG_TAG} [cmd:image] 解析参数: {args}")
         prompt = args["prompt"]
         if not prompt:
+            logger.info(f"{LOG_TAG} [cmd:image] prompt 为空")
             yield event.plain_result("请提供提示词。")
             return
 
         if not self.image_gen_key:
+            logger.warning(f"{LOG_TAG} [cmd:image] token 未配置")
             yield event.plain_result("未配置 image_gen_key，请先在插件配置中填写 token。")
             return
 
@@ -433,46 +525,65 @@ class NAIGenerateImagePlugin(Star):
         size = self._resolve_size(size_cn)
 
         if style not in IMAGE_STYLES and style != "custom":
+            logger.warning(f"{LOG_TAG} [cmd:image] 未知风格: {style}")
             yield event.plain_result(
                 f"未知风格: {style}\n可选: {', '.join(IMAGE_STYLES.keys())}"
             )
             return
 
+        logger.info(
+            f"{LOG_TAG} [cmd:image] 最终参数 | style={style} size_cn={size_cn} "
+            f"size_eng={size} n={n}"
+        )
         yield event.plain_result(
             f"提示词: {prompt}\n风格: {IMAGE_STYLES.get(style, style)}，比例: {size_cn}，共 {n} 张"
         )
 
         success = 0
         for i in range(n):
+            logger.info(f"{LOG_TAG} [cmd:image] 生成第 {i + 1}/{n} 张")
             img_bytes = await self._generate_one(prompt, style, size)
             if img_bytes:
                 success += 1
-                yield event.chain_result([
-                    Plain(f"[{i + 1}/{n}]"),
-                    Img.fromBytes(img_bytes),
-                ])
+                logger.info(
+                    f"{LOG_TAG} [cmd:image] 第 {i + 1}/{n} 张发送 | bytes={len(img_bytes)}"
+                )
+                yield event.chain_result(
+                    [
+                        Plain(f"[{i + 1}/{n}]"),
+                        Img.fromBytes(img_bytes),
+                    ]
+                )
             else:
-                yield event.plain_result(f"第 {i + 1}/{n} 张生成失败。")
+                logger.warning(f"{LOG_TAG} [cmd:image] 第 {i + 1}/{n} 张失败")
 
         if success == 0:
+            logger.error(f"{LOG_TAG} [cmd:image] 全部 {n} 张失败")
             yield event.plain_result("全部图片生成失败，请检查 token 或网络。")
+        else:
+            logger.info(f"{LOG_TAG} [cmd:image] 完成 | 成功 {success}/{n}")
 
     @filter.command("quota")
     async def quota(self, event: AstrMessageEvent):
-        """查询 NAI 生图 token 配额。"""
+        sender = event.get_sender_id() if hasattr(event, "get_sender_id") else "?"
+        logger.info(f"{LOG_TAG} [cmd:quota] 收到指令 | sender={sender}")
         if not self.image_gen_key:
+            logger.warning(f"{LOG_TAG} [cmd:quota] token 未配置")
             yield event.plain_result("未配置 image_gen_key。")
             return
         yield event.plain_result("正在查询配额...")
         val = await self._fetch_quota()
         if val is None:
+            logger.warning(f"{LOG_TAG} [cmd:quota] 查询失败")
             yield event.plain_result("配额查询失败，请检查 token 或网络。")
         else:
+            logger.info(f"{LOG_TAG} [cmd:quota] 返回 {val}")
             yield event.plain_result(f"剩余配额: {val}")
 
     @filter.command("imgstatus")
     async def imgstatus(self, event: AstrMessageEvent):
-        """检查 NAI 生图服务连通性。"""
+        sender = event.get_sender_id() if hasattr(event, "get_sender_id") else "?"
+        logger.info(f"{LOG_TAG} [cmd:imgstatus] 收到指令 | sender={sender}")
         yield event.plain_result("正在检查生图服务...")
         ok, latency = await self._check_status()
         if ok:
@@ -480,10 +591,9 @@ class NAIGenerateImagePlugin(Star):
         else:
             yield event.plain_result("生图服务不可用，请稍后重试。")
 
-
     @filter.on_decorating_result()
     async def auto_generate_for_companion(self, event: AstrMessageEvent):
-
+        logger.debug(f"{LOG_TAG} [hook:on_decorating_result] 进入 (空实现)")
         return
 
     def _save_companion_image(self, img_bytes: bytes, prompt: str) -> Optional[str]:
@@ -503,5 +613,5 @@ class NAIGenerateImagePlugin(Star):
             save_path.write_bytes(img_bytes)
             return str(save_path)
         except Exception as e:
-            logger.warning(f"[NAI-Image] 保存图片失败: {e}")
+            logger.warning(f"{LOG_TAG} [companion:save] 保存图片失败: {e}")
             return None
