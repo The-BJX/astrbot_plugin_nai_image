@@ -23,7 +23,7 @@
 
 ## 联动插件：astrbot_plugin_private_companion（我会永远陪着你）
 
-本插件可以作为 [`astrbot_plugin_private_companion`]([https://github.com/menglimi/astrbot_plugin_private_companion]) （"我会永远陪着你"）的联动后端使用。插件启动后会在 `127.0.0.1:8765` 起一个 **OpenAI Images API 兼容** 的本地代理，让陪伴插件把生图请求转发到这里，由 nai.sta1n.cn 完成实际生图。
+本插件可以作为 [`astrbot_plugin_private_companion`](https://github.com/menglimi/astrbot_plugin_private_companion) （"我会永远陪着你"）的联动后端使用。插件启动后会在 `127.0.0.1:8765` 起一个 **OpenAI Images API 兼容** 的本地代理，让陪伴插件把生图请求转发到这里，由 nai.sta1n.cn 完成实际生图。
 
 ### 食用方法
 
@@ -37,6 +37,8 @@
 这样配置后，当陪伴插件发出生图请求时，本插件会**自动监听 8765 端口**，接管请求、调用 nai.sta1n.cn 出图，然后把 base64 图片传回陪伴插件。
 
 > 本插件的 `image_gen_key` 仍然要填写真实的 nai.sta1n.cn token，配额和生图参数也是从本插件的 `_conf_schema.json` 读取。
+> 生图密钥可在[千寻寄售](https://www.qianxun1688.com/links/D07F549B)链接中获取平均约0.007/张。
+> 本人与站点和平台没有任何关系，只是作为分享生图平台并不牟利，生图平台也是完全公益。
 
 ---
 
