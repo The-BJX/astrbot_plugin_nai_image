@@ -6,7 +6,7 @@ from typing import Optional
 import aiohttp
 from aiohttp import web
 from astrbot.api import logger
-from astrbot.api.event import AstrMessageEvent, filter, MessageEventResult
+from astrbot.api.event import AstrMessageEvent, filter, MessageEventResult, MessageChain
 from astrbot.api.message_components import Image as Img, Plain
 from astrbot.api.star import Context, Star, register
 
@@ -645,20 +645,24 @@ class NAIGenerateImagePlugin(Star):
         logger.info(f"{LOG_TAG} [tool:NAI_Generate_Image] 调用NAI_Generate_Image, 参数： prompt: {prompt}, style: {style}, size_cn:{size_cn}")
         if not prompt:
             logger.info(f"{LOG_TAG} [tool:NAI_Generate_Image] prompt 为空")
-            return "生成失败，提示词不应为空"
+            yield "生成失败，提示词不应为空"
+            return
 
         if not self.image_gen_key:
             logger.warning(f"{LOG_TAG} [tool:NAI_Generate_Image] token 未配置")
-            return "生成失败，未配置 image_gen_key，请告知用户先在插件配置中填写 token。"
-
+            yield "生成失败，未配置 image_gen_key，请告知用户先在插件配置中填写 token。"
+            return
+        
         if style not in IMAGE_STYLES and style != "custom":
             logger.warning(f"{LOG_TAG} [tool:NAI_Generate_Image] 未知风格: {style}")
-            return f"未知风格: {style}\n可选: {', '.join(IMAGE_STYLES.keys())}"
-
+            yield f"未知风格: {style}\n可选: {', '.join(IMAGE_STYLES.keys())}"
+            return
+        
         if size_cn not in IMAGE_SIZES:
             logger.warning(f"{LOG_TAG} [tool:NAI_Generate_Image] 未知尺寸: {size_cn}")
-            return f"未知尺寸: {size_cn}\n可选: {', '.join(IMAGE_SIZES.keys())}"
-
+            yield f"未知尺寸: {size_cn}\n可选: {', '.join(IMAGE_SIZES.keys())}"
+            return
+        
         size = self._resolve_size(size_cn)
 
         logger.info(
@@ -674,6 +678,7 @@ class NAIGenerateImagePlugin(Star):
         first_reason: Optional[str] = None
         #开始原生成循环
         logger.info(f"{LOG_TAG} [tool:NAI_Generate_Image] 生成第 1/1 张")
+        self._sendMessage(event, "[正在调用api生成图片]")
         img_bytes, reason = await self._generate_one(prompt, style, size)
         if img_bytes:
             success += 1
@@ -693,12 +698,14 @@ class NAIGenerateImagePlugin(Star):
                 f"{LOG_TAG} [tool:NAI_Generate_Image] 失败 | reason={reason}"
             )
             yield event.plain_result(f"生成失败：{_format_generate_error(reason)}")
-            
+            return
+        
         if success == 0:
             logger.error(
                 f"{LOG_TAG} [tool:NAI_Generate_Image] 失败 | first_reason={first_reason}"
             )
-            return f"图片生成失败。\n{_format_generate_error(first_reason or 'unknown')}"
+            yield f"图片生成失败。\n{_format_generate_error(first_reason or 'unknown')}"
+            return
         else:
             logger.info(f"{LOG_TAG} [tool:NAI_Generate_Image] 完成 | 成功")
         
@@ -717,11 +724,16 @@ class NAIGenerateImagePlugin(Star):
             )
             save_path = save_dir / name
             save_path.write_bytes(img_bytes)
-            return "图片保存成功！本地路径："+str(save_path)
+            yield "图片保存成功！本地路径："+str(save_path)
         except Exception as e:
             logger.warning(f"{LOG_TAG} [tool:NAI_Generate_Image:save] 保存图片失败: {e}")
-            return None
-
+            return 
+        return
+    
+    async def _sendMessage(self, event: AstrMessageEvent, text: str):
+        umo = event.unified_msg_origin
+        message_chain = MessageChain().message(str)
+        await self.context.send_message(event.unified_msg_origin, message_chain)
 
     @filter.command("quota")
     async def quota(self, event: AstrMessageEvent):
