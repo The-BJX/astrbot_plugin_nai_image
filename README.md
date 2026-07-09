@@ -64,7 +64,7 @@ preset + tag → nai.sta1n.cn
 在 `astrbot_plugin_private_companion` 的生图设置里：
 
 1. **生图方式** 选择"在线 API 生图"
-2. **API 地址** 填写：`http://127.0.0.1:8765`
+2. **API 地址** 填写：`http://127.0.0.1:8765/v1`
 3. **API Key** 任意填写一个占位符即可（NAI 插件不校验）
 4. **模型名** 任意填写一个占位符即可（NAI 插件不校验）
 
